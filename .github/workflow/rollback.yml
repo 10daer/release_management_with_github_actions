@@ -1,0 +1,94 @@
+name: Rollback Application
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_version:
+        description: 'Version to rollback to (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  rollback:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Setup SSH
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      # Step 2: Perform rollback
+      - name: Rollback to Version ${{ github.event.inputs.target_version }}
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            set -e
+            
+            TARGET_VERSION="${{ github.event.inputs.target_version }}"
+            APP_DIR="/var/www/nest-app"
+            TARGET_DIR="$APP_DIR/releases/$TARGET_VERSION"
+            
+            echo "========================================="
+            echo "Rolling back to version: $TARGET_VERSION"
+            echo "========================================="
+            
+            # Check if target version exists
+            if [ ! -d "$TARGET_DIR" ]; then
+              echo "Error: Version $TARGET_VERSION does not exist on server"
+              echo "Available versions:"
+              ls -1 $APP_DIR/releases
+              exit 1
+            fi
+            
+            # Get current version for backup info
+            CURRENT_VERSION=$(cat $APP_DIR/current-version.txt | head -n 1)
+            echo "Current version: $CURRENT_VERSION"
+            echo "Target version: $TARGET_VERSION"
+            
+            # Stop current application
+            echo "Stopping current application..."
+            pm2 delete nest-app 2>/dev/null || true
+            
+            # Update symlink to target version
+            echo "Switching to version $TARGET_VERSION..."
+            ln -sfn $TARGET_DIR $APP_DIR/current
+            
+            # Start application
+            echo "Starting application..."
+            cd $APP_DIR/current
+            pm2 start ecosystem.config.js
+            pm2 save
+            
+            # Update version info
+            echo "$TARGET_VERSION" > $APP_DIR/current-version.txt
+            echo "Rolled back from $CURRENT_VERSION at $(date)" >> $APP_DIR/current-version.txt
+            
+            echo "========================================="
+            echo "Rollback completed successfully!"
+            echo "Previous version: $CURRENT_VERSION"
+            echo "Current version: $TARGET_VERSION"
+            echo "========================================="
+            
+            # Verify application is running
+            sleep 3
+            pm2 list
+          ENDSSH
+
+      # Step 3: Health check
+      - name: Health Check
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            echo "Running health check..."
+            sleep 5
+            curl -f http://localhost:3000/health || exit 1
+            echo "Health check passed!"
+          ENDSSH
+
+      # Step 4: Rollback summary
+      - name: Rollback Summary
+        run: |
+          echo "::notice::Rollback completed to version ${{ github.event.inputs.target_version }}"
+          echo "::notice::Application is running successfully"

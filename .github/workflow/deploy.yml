@@ -1,0 +1,162 @@
+name: Deploy NestJS Application
+
+on:
+  push:
+    tags:
+      - 'v*.*.*' # Triggers on version tags like v1.0.0, v2.0.0
+  workflow_dispatch: # Allows manual triggering
+    inputs:
+      version:
+        description: 'Version to deploy (e.g., v1.0.0)'
+        required: true
+        type: string
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Step 1: Checkout the code
+      - name: Checkout Code
+        uses: actions/checkout@v3
+
+      # Step 2: Setup Node.js
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+          cache: 'npm'
+
+      # Step 3: Install dependencies
+      - name: Install Dependencies
+        run: npm ci
+
+      # Step 4: Build the application
+      - name: Build Application
+        run: npm run build
+
+      # Step 5: Get version from tag or input
+      - name: Get Version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" == "workflow_dispatch" ]; then
+            echo "VERSION=${{ github.event.inputs.version }}" >> $GITHUB_OUTPUT
+          else
+            echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          fi
+
+      # Step 6: Create deployment package
+      - name: Create Deployment Package
+        run: |
+          mkdir -p deploy-package
+          cp -r dist deploy-package/
+          cp -r node_modules deploy-package/
+          cp package*.json deploy-package/
+          cd deploy-package
+          tar -czf ../nest-app-${{ steps.version.outputs.VERSION }}.tar.gz .
+
+      # Step 7: Setup SSH
+      - name: Setup SSH
+        run: |
+          mkdir -p ~/.ssh
+          echo "${{ secrets.SSH_PRIVATE_KEY }}" > ~/.ssh/id_rsa
+          chmod 600 ~/.ssh/id_rsa
+          ssh-keyscan -H ${{ secrets.SERVER_HOST }} >> ~/.ssh/known_hosts
+
+      # Step 8: Transfer package to server
+      - name: Transfer Package to Server
+        run: |
+          scp nest-app-${{ steps.version.outputs.VERSION }}.tar.gz \
+            ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }}:/tmp/
+
+      # Step 9: Deploy on server
+      - name: Deploy Application
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            set -e
+            
+            VERSION="${{ steps.version.outputs.VERSION }}"
+            APP_DIR="/var/www/nest-app"
+            RELEASE_DIR="$APP_DIR/releases/$VERSION"
+            
+            echo "========================================="
+            echo "Deploying version: $VERSION"
+            echo "========================================="
+            
+            # Create release directory
+            mkdir -p $RELEASE_DIR
+            
+            # Extract package
+            echo "Extracting package..."
+            tar -xzf /tmp/nest-app-$VERSION.tar.gz -C $RELEASE_DIR
+            
+            # Create ecosystem file for PM2
+            cat > $RELEASE_DIR/ecosystem.config.js << 'EOF'
+          module.exports = {
+            apps: [{
+              name: 'nest-app',
+              script: './dist/main.js',
+              instances: 1,
+              exec_mode: 'fork',
+              env: {
+                NODE_ENV: 'production',
+                PORT: 3000
+              }
+            }]
+          };
+          EOF
+            
+            # Stop existing application if running
+            echo "Stopping existing application..."
+            pm2 delete nest-app 2>/dev/null || true
+            
+            # Update symlink to new version
+            echo "Updating symlink to new version..."
+            ln -sfn $RELEASE_DIR $APP_DIR/current
+            
+            # Start application with PM2
+            echo "Starting application..."
+            cd $APP_DIR/current
+            pm2 start ecosystem.config.js
+            pm2 save
+            
+            # Create version info file
+            echo "$VERSION" > $APP_DIR/current-version.txt
+            date >> $APP_DIR/current-version.txt
+            
+            # Clean up old releases (keep last 5 versions)
+            echo "Cleaning up old releases..."
+            cd $APP_DIR/releases
+            ls -t | tail -n +6 | xargs -r rm -rf
+            
+            # Show deployment info
+            echo "========================================="
+            echo "Deployment completed successfully!"
+            echo "Current version: $VERSION"
+            echo "Available versions:"
+            ls -lt $APP_DIR/releases | grep "^d" | awk '{print $9}'
+            echo "========================================="
+            
+            # Verify application is running
+            sleep 3
+            pm2 list
+            
+            # Clean up tar file
+            rm /tmp/nest-app-$VERSION.tar.gz
+          ENDSSH
+
+      # Step 10: Health check
+      - name: Health Check
+        run: |
+          ssh ${{ secrets.SERVER_USER }}@${{ secrets.SERVER_HOST }} << 'ENDSSH'
+            echo "Running health check..."
+            sleep 5
+            curl -f http://localhost:3000/health || exit 1
+            echo "Health check passed!"
+          ENDSSH
+
+      # Step 11: Display deployment summary
+      - name: Deployment Summary
+        run: |
+          echo "::notice::Deployment completed for version ${{ steps.version.outputs.VERSION }}"
+          echo "::notice::Application is running and accessible"
