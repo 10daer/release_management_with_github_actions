@@ -38,7 +38,7 @@ export class AppController {
     return this.appService.reverseString(text);
   }
 
-  // 5. NEW FEATURE (v2.0.0): Basic Statistics
+  // 5. NEW FEATURE (v2.0.0): Statistics
   @Get('stats')
   calculateStats(@Query('numbers') numbers: string) {
     const values = numbers
