@@ -6,7 +6,7 @@ export class AppService {
   getWelcome() {
     return {
       message: 'Welcome to Simple NestJS API',
-      version: '1.0.0',
+      version: '2.0.0',
       endpoints: [
         { path: '/health', method: 'GET', description: 'Health check' },
         {
@@ -65,6 +65,19 @@ export class AppService {
       operation: 'reverse',
       input: text,
       result: reversed,
+    };
+  }
+
+  calculateStats(numbers: number[]) {
+    const sum = numbers.reduce((a, b) => a + b, 0);
+    const average = numbers.length ? sum / numbers.length : 0;
+
+    return {
+      numbers,
+      sum,
+      average,
+      min: Math.min(...numbers),
+      max: Math.max(...numbers),
     };
   }
 }

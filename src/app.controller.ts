@@ -37,4 +37,15 @@ export class AppController {
   reverseString(@Query('text') text: string) {
     return this.appService.reverseString(text);
   }
+
+  // 5. NEW FEATURE (v2.0.0): Basic Statistics
+  @Get('stats')
+  calculateStats(@Query('numbers') numbers: string) {
+    const values = numbers
+      .split(',')
+      .map((n) => parseFloat(n))
+      .filter((n) => !isNaN(n));
+
+    return this.appService.calculateStats(values);
+  }
 }
